@@ -306,18 +306,27 @@ class LipsyncPipeline(DiffusionPipeline):
         is_train = self.denoising_unet.training
         self.denoising_unet.eval()
 
+        logger.info("Starting lipsync pipeline processing")
+        logger.info(f"Input video: {video_path}, Audio: {audio_path}, Output: {video_out_path}")
+        logger.info(f"Configuration - Frames: {num_frames}, FPS: {video_fps}, Height/Width: {height}/{width}")
+
         check_ffmpeg_installed()
 
         # 0. Define call parameters
         batch_size = 1
         device = self._execution_device
+        logger.info(f"Using device: {device}, Weight dtype: {weight_dtype}")
+        
         mask_image = load_fixed_mask(height, mask_image_path)
+        logger.info(f"Loaded mask image from {mask_image_path}")
+        
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
         height = height or self.denoising_unet.config.sample_size * self.vae_scale_factor
         width = width or self.denoising_unet.config.sample_size * self.vae_scale_factor
+        logger.info(f"Using dimensions: {height}x{width}")
 
         # 2. Check inputs
         self.check_inputs(height, width, callback_steps)
@@ -326,27 +335,42 @@ class LipsyncPipeline(DiffusionPipeline):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
+        logger.info(f"Classifier free guidance: {do_classifier_free_guidance} (scale={guidance_scale})")
 
         # 3. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
+        logger.info(f"Set {num_inference_steps} inference steps")
 
         # 4. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+        logger.info("Prepared extra step kwargs")
 
+        logger.info("Converting audio to whisper features")
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        logger.info(f"Generated {len(whisper_chunks)} whisper chunks")
 
+        logger.info("Reading audio samples")
         audio_samples = read_audio(audio_path)
+        logger.info(f"Audio samples shape: {audio_samples.shape}")
+        
+        logger.info("Reading video frames")
         video_frames = read_video(video_path, use_decord=False)
+        logger.info(f"Video frames count: {len(video_frames)}")
 
         num_inferences = min(len(video_frames), len(whisper_chunks)) // num_frames
         video_frames = video_frames[: num_inferences * num_frames]
+        logger.info(f"Will perform {num_inferences} inferences with {num_frames} frames each")
+        
+        logger.info("Starting affine transformation of video frames")
         faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+        logger.info(f"Transformed {len(faces)} faces")
 
         num_channels_latents = self.vae.config.latent_channels
 
         # Prepare latent variables
+        logger.info("Preparing latent variables")
         all_latents = self.prepare_latents(
             batch_size,
             num_frames * num_inferences,
@@ -357,33 +381,49 @@ class LipsyncPipeline(DiffusionPipeline):
             device,
             generator,
         )
+        logger.info(f"Latents shape: {all_latents.shape}")
         
         # Set up temp directory for saving frames
         temp_dir = "temp"
         frames_dir = os.path.join(temp_dir, "frames")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
+            logger.info(f"Removed existing temp directory: {temp_dir}")
         os.makedirs(temp_dir, exist_ok=True)
         os.makedirs(frames_dir, exist_ok=True)
+        logger.info(f"Created temp directories: {temp_dir}, {frames_dir}")
         
         frame_index = 0
         
         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
+            logger.info(f"Starting inference {i+1}/{num_inferences}")
+            
             if self.denoising_unet.add_audio_layer:
+                logger.info("Processing audio embeddings")
                 audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
                 audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
+                logger.info(f"Audio embeds shape: {audio_embeds.shape}")
+                
                 if do_classifier_free_guidance:
                     null_audio_embeds = torch.zeros_like(audio_embeds)
                     audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
+                    logger.info(f"Combined audio embeds shape with null: {audio_embeds.shape}")
             else:
                 audio_embeds = None
+                logger.info("No audio layer - audio embeddings set to None")
+                
             inference_faces = faces[i * num_frames : (i + 1) * num_frames]
             latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+            logger.info(f"Current batch latents shape: {latents.shape}")
+            
+            logger.info("Preparing masks and masked images")
             ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                 inference_faces, affine_transform=False
             )
+            logger.info(f"Masks shape: {masks.shape}")
 
             # 7. Prepare mask latent variables
+            logger.info("Preparing mask latent variables")
             mask_latents, masked_image_latents = self.prepare_mask_latents(
                 masks,
                 masked_pixel_values,
@@ -394,8 +434,10 @@ class LipsyncPipeline(DiffusionPipeline):
                 generator,
                 do_classifier_free_guidance,
             )
+            logger.info(f"Mask latents shape: {mask_latents.shape}")
 
             # 8. Prepare image latents
+            logger.info("Preparing reference image latents")
             ref_latents = self.prepare_image_latents(
                 ref_pixel_values,
                 device,
@@ -403,9 +445,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 generator,
                 do_classifier_free_guidance,
             )
+            logger.info(f"Reference latents shape: {ref_latents.shape}")
 
             # 9. Denoising loop
             num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+            logger.info(f"Starting denoising loop with {num_warmup_steps} warmup steps")
+            
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for j, t in enumerate(timesteps):
                     # expand the latents if we are doing classifier free guidance
@@ -417,6 +462,9 @@ class LipsyncPipeline(DiffusionPipeline):
                     denoising_unet_input = torch.cat(
                         [denoising_unet_input, mask_latents, masked_image_latents, ref_latents], dim=1
                     )
+                    
+                    if j == 0:
+                        logger.info(f"Denoising UNet input shape: {denoising_unet_input.shape}")
 
                     # predict the noise residual
                     noise_pred = self.denoising_unet(
@@ -436,36 +484,52 @@ class LipsyncPipeline(DiffusionPipeline):
                         progress_bar.update()
                         if callback is not None and j % callback_steps == 0:
                             callback(j, t, latents)
+            
+            logger.info("Denoising completed for current batch")
 
             # Recover the pixel values
+            logger.info("Decoding latents to pixel values")
             decoded_latents = self.decode_latents(latents)
+            logger.info(f"Decoded latents shape: {decoded_latents.shape}")
+            
             decoded_latents = self.paste_surrounding_pixels_back(
                 decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
             )
+            logger.info("Pasted surrounding pixels back")
             
             # Process batch and save frames to disk
+            logger.info("Restoring video frames")
             batch_frames = self.restore_video(
                 decoded_latents, video_frames[i * num_frames : (i + 1) * num_frames], 
                 boxes[i * num_frames : (i + 1) * num_frames], 
                 affine_matrices[i * num_frames : (i + 1) * num_frames]
             )
+            logger.info(f"Restored {len(batch_frames)} frames")
             
             # Save each frame in this batch as a JPG
+            logger.info("Saving frames to disk")
+            frames_start = frame_index
             for frame in batch_frames:
                 cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_index:06d}.jpg"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                 frame_index += 1
+            logger.info(f"Saved frames {frames_start} through {frame_index-1}")
             
             # Clear CUDA cache to prevent memory issues
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                logger.info("Cleared CUDA cache")
 
+        logger.info(f"Total frames processed: {frame_index}")
         audio_samples_remain_length = int(frame_index / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+        logger.info(f"Trimmed audio samples to {audio_samples_remain_length} samples")
 
         if is_train:
             self.denoising_unet.train()
+            logger.info("Restored UNet to training mode")
 
         # Save audio
+        logger.info("Saving audio to WAV file")
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
         
         # Create video from frames using ffmpeg
@@ -473,9 +537,16 @@ class LipsyncPipeline(DiffusionPipeline):
         video_temp_path = os.path.join(temp_dir, "video.mp4")
         
         # Create video from frames
+        logger.info("Creating video from frames using ffmpeg")
         command = f"ffmpeg -y -loglevel error -framerate {video_fps} -i {frames_path} -c:v libx264 -pix_fmt yuv420p {video_temp_path}"
+        logger.info(f"Running command: {command}")
         subprocess.run(command, shell=True)
         
         # Combine video and audio
+        logger.info("Combining video and audio")
         command = f"ffmpeg -y -loglevel error -nostdin -i {video_temp_path} -i {os.path.join(temp_dir, 'audio.wav')} -c:v copy -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+        logger.info(f"Running command: {command}")
         subprocess.run(command, shell=True)
+        
+        logger.info(f"Successfully created lip sync video: {video_out_path}")
+        return
