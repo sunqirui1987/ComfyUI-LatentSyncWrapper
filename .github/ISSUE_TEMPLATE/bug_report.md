@@ -8,7 +8,7 @@ assignees: ''
 
 <!-- 
 🔍 STOP! Before creating a new issue:
-1. Please search the closed issues first: https://github.com/ShmuelRonen/ComfyUI-LatentSyncWrapper/issues?q=is%3Aissue+is%3Aclosed
+1. Please search the closed issues first: https://github.com/sunqirui1987/ComfyUI-LatentSyncWrapper/issues?q=is%3Aissue+is%3Aclosed
 2. Check if your issue has already been resolved in past discussions.
 3. If you find a similar issue, please add a comment there instead of creating a new one.
 -->

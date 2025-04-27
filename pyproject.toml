@@ -6,7 +6,7 @@ license = {file = "LICENSE"}
 dependencies = ["diffusers", "transformers", "huggingface-hub", "omegaconf", "einops", "opencv-python", "mediapipe", "face-alignment", "decord", "ffmpeg-python", "safetensors", "soundfile"]
 
 [project.urls]
-Repository = "https://github.com/ShmuelRonen/ComfyUI-LatentSyncWrapper"
+Repository = "https://github.com/sunqirui1987/ComfyUI-LatentSyncWrapper"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
