@@ -394,52 +394,95 @@ class LatentSyncNode:
         # Use our module temp directory
         global MODULE_TEMP_DIR
         
+        # Initialize logging function
+        def log_memory(message):
+            if torch.cuda.is_available():
+                try:
+                    total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    reserved = torch.cuda.memory_reserved(0) / (1024**3)
+                    allocated = torch.cuda.memory_allocated(0) / (1024**3)
+                    free = total_mem - reserved
+                    print(f"[MEMORY] {message}: Total: {total_mem:.2f}GB, Reserved: {reserved:.2f}GB, Allocated: {allocated:.2f}GB, Free: {free:.2f}GB")
+                except Exception as e:
+                    print(f"[MEMORY] Error logging memory: {str(e)}")
+            else:
+                print(f"[LOG] {message}")
+        
+        # Start logging
+        log_memory("Starting inference")
+        
         # Get GPU capabilities and memory
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"[INFO] Using device: {device}")
         BATCH_SIZE = 4
         use_mixed_precision = False
+        
+        # Determine available GPU memory and set parameters accordingly
         if torch.cuda.is_available():
-            gpu_mem = torch.cuda.get_device_properties(0).total_memory
-            # Convert to GB
-            gpu_mem_gb = gpu_mem / (1024 ** 3)
-
-            # Dynamically adjust batch size based on GPU memory
-            if gpu_mem_gb > 20:  # High-end GPUs
-                BATCH_SIZE = 32
-                enable_tf32 = True
-                use_mixed_precision = True
-            elif gpu_mem_gb > 8:  # Mid-range GPUs
-                BATCH_SIZE = 16
-                enable_tf32 = False
-                use_mixed_precision = True
-            else:  # Lower-end GPUs
+            # Clear GPU cache before we start
+            torch.cuda.empty_cache()
+            log_memory("After initial cache clear")
+            
+            # Get total and free memory
+            total_mem = torch.cuda.get_device_properties(0).total_memory
+            # Convert to GB for better readability in logs
+            total_mem_gb = total_mem / (1024 ** 3)
+            
+            # Try to get current free memory
+            try:
+                reserved_mem = torch.cuda.memory_reserved(0)
+                allocated_mem = torch.cuda.memory_allocated(0)
+                free_mem = total_mem - reserved_mem
+                free_mem_gb = free_mem / (1024 ** 3)
+                print(f"[INFO] Total GPU memory: {total_mem_gb:.2f}GB, Free: {free_mem_gb:.2f}GB")
+            except:
+                # If we can't get free memory, just use total memory
+                free_mem_gb = total_mem_gb
+                print(f"[INFO] Total GPU memory: {total_mem_gb:.2f}GB")
+                
+            # Determine batch size and precision based on available memory
+            if free_mem_gb > 12:  # High-end GPUs with plenty of memory
                 BATCH_SIZE = 8
-                enable_tf32 = False
-                use_mixed_precision = False
-
-            # Set performance options based on GPU capability
+                use_mixed_precision = True
+                print("[CONFIG] Using high-memory settings: batch_size=8, mixed_precision=True")
+            elif free_mem_gb > 6:  # Mid-range GPUs
+                BATCH_SIZE = 4
+                use_mixed_precision = True
+                print("[CONFIG] Using mid-memory settings: batch_size=4, mixed_precision=True")
+            else:  # Lower memory GPUs
+                BATCH_SIZE = 2
+                use_mixed_precision = True
+                print("[CONFIG] Using low-memory settings: batch_size=2, mixed_precision=True")
+            
+            # Set performance options
             torch.backends.cudnn.benchmark = True
-            if enable_tf32:
+            if free_mem_gb > 8:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
-
-            # Clear GPU cache before processing
-            torch.cuda.empty_cache()
-            torch.cuda.set_per_process_memory_fraction(0.8)
+                print("[CONFIG] Enabled TF32 precision")
+            
+            # Set memory fraction to avoid using all GPU memory
+            try:
+                torch.cuda.set_per_process_memory_fraction(0.7)  # Use only 70% of GPU memory
+                print("[CONFIG] Set GPU memory fraction to 0.7")
+            except:
+                print("[WARNING] Could not set memory fraction, using default memory management")
 
         # Create a run-specific subdirectory in our temp directory
         run_id = ''.join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(5))
         temp_dir = os.path.join(MODULE_TEMP_DIR, f"run_{run_id}")
         os.makedirs(temp_dir, exist_ok=True)
+        print(f"[INFO] Created temporary directory: {temp_dir}")
         
         # Ensure ComfyUI temp doesn't exist again (in case something recreated it)
-        comfyui_temp = "D:\\ComfyUI_windows\\temp"
-        if os.path.exists(comfyui_temp):
+        comfyui_temp = get_comfyui_temp_dir()
+        if comfyui_temp and os.path.exists(comfyui_temp):
             backup_name = f"{comfyui_temp}_backup_{uuid.uuid4().hex[:8]}"
             try:
                 os.rename(comfyui_temp, backup_name)
+                print(f"[INFO] Renamed ComfyUI temp directory to {backup_name}")
             except:
-                pass
+                print(f"[WARNING] Failed to rename ComfyUI temp directory")
         
         temp_video_path = None
         output_video_path = None
@@ -454,30 +497,89 @@ class LatentSyncNode:
             # Get the extension directory
             cur_dir = os.path.dirname(os.path.abspath(__file__))
             
-            # Process input frames
+            # Log image information
+            print(f"[INFO] Input images shape: {images.shape if hasattr(images, 'shape') else 'list of tensors'}")
+            print(f"[INFO] Audio shape: {audio['waveform'].shape}, Sample rate: {audio['sample_rate']}")
+            
+            # Process input frames - keep on CPU as long as possible
+            log_memory("Before processing input frames")
             if isinstance(images, list):
-                frames = torch.stack(images).to(device)
+                frames = torch.stack(images)
+                print(f"[INFO] Stacked list of images into tensor of shape {frames.shape}")
             else:
-                frames = images.to(device)
+                frames = images.clone()  # Use clone to avoid modifying original data
+                print(f"[INFO] Cloned image tensor of shape {frames.shape}")
+                
+            # Convert to bytes while still on CPU
             frames = (frames * 255).byte()
-
+            print(f"[INFO] Converted frames to byte tensor")
+            
             if len(frames.shape) == 3:
                 frames = frames.unsqueeze(0)
-
-            # Process audio with device awareness
-            waveform = audio["waveform"].to(device)
+                print(f"[INFO] Unsqueezed frames to shape {frames.shape}")
+            
+            log_memory("After processing input frames")
+                
+            # Process audio - keep on CPU initially
+            log_memory("Before processing audio")
+            waveform = audio["waveform"]
             sample_rate = audio["sample_rate"]
             if waveform.dim() == 3:
                 waveform = waveform.squeeze(0)
+                print(f"[INFO] Squeezed waveform to shape {waveform.shape}")
 
             if sample_rate != 16000:
+                print(f"[INFO] Resampling audio from {sample_rate}Hz to 16000Hz")
+                # Create resampler on CPU first, then move to device only for processing
                 new_sample_rate = 16000
                 resampler = torchaudio.transforms.Resample(
                     orig_freq=sample_rate,
                     new_freq=new_sample_rate
-                ).to(device)
-                waveform_16k = resampler(waveform)
+                )
+                
+                if device.type == 'cuda':
+                    # Process in smaller chunks if needed for large audio
+                    if waveform.shape[1] > 1000000:  # If very long audio
+                        print("[INFO] Processing large audio in chunks")
+                        chunk_size = 500000
+                        chunks = []
+                        
+                        for i in range(0, waveform.shape[1], chunk_size):
+                            end = min(i + chunk_size, waveform.shape[1])
+                            chunk = waveform[:, i:end]
+                            print(f"[INFO] Processing audio chunk {i}-{end} of {waveform.shape[1]}")
+                            # Move each chunk to GPU, process, then back to CPU
+                            chunk_gpu = chunk.to(device)
+                            log_memory(f"After moving audio chunk {i}-{end} to GPU")
+                            chunk_resampled = resampler.to(device)(chunk_gpu)
+                            chunks.append(chunk_resampled.cpu())
+                            # Clear GPU memory after each chunk
+                            del chunk_gpu
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                log_memory(f"After processing audio chunk {i}-{end}")
+                                
+                        waveform_16k = torch.cat(chunks, dim=1)
+                        print(f"[INFO] Concatenated {len(chunks)} audio chunks")
+                    else:
+                        # For smaller audio, process normally
+                        print("[INFO] Processing audio on GPU")
+                        waveform_gpu = waveform.to(device)
+                        log_memory("After moving audio to GPU")
+                        waveform_16k = resampler.to(device)(waveform_gpu)
+                        waveform_16k = waveform_16k.cpu()  # Move back to CPU
+                        print("[INFO] Moved resampled audio back to CPU")
+                        del waveform_gpu
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            log_memory("After audio processing")
+                else:
+                    # For CPU processing
+                    print("[INFO] Processing audio on CPU")
+                    waveform_16k = resampler(waveform)
+                    
                 waveform, sample_rate = waveform_16k, new_sample_rate
+                print(f"[INFO] Resampled audio shape: {waveform.shape}, New sample rate: {sample_rate}")
 
             # Package resampled audio
             resampled_audio = {
@@ -485,30 +587,81 @@ class LatentSyncNode:
                 "sample_rate": sample_rate
             }
             
-            # Move waveform to CPU for saving
-            waveform_cpu = waveform.cpu()
-            torchaudio.save(audio_path, waveform_cpu, sample_rate)
+            # Save audio to file
+            print(f"[INFO] Saving audio to {audio_path}")
+            torchaudio.save(audio_path, waveform, sample_rate)
 
-            # Move frames to CPU for saving to video
-            frames_cpu = frames.cpu()
+            # Save video to file - process in batches if needed
+            log_memory("Before saving video to file")
             try:
                 import torchvision.io as io
-                io.write_video(temp_video_path, frames_cpu, fps=25, video_codec='h264')
-            except TypeError:
-                import av
-                container = av.open(temp_video_path, mode='w')
-                stream = container.add_stream('h264', rate=25)
-                stream.width = frames_cpu.shape[2]
-                stream.height = frames_cpu.shape[1]
+                # For large videos, write frames in batches to avoid OOM
+                if frames.shape[0] > 100:  # If video has many frames
+                    import cv2
+                    print(f"[INFO] Processing large video with {frames.shape[0]} frames in batches")
+                    
+                    # Get video dimensions
+                    height, width = frames.shape[1], frames.shape[2]
+                    print(f"[INFO] Video dimensions: {width}x{height}")
+                    
+                    # Create video writer
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    video_writer = cv2.VideoWriter(temp_video_path, fourcc, 25, (width, height))
+                    
+                    # Process in batches
+                    batch_size = min(50, frames.shape[0])  # Process 50 frames at a time
+                    print(f"[INFO] Processing video in batches of {batch_size} frames")
+                    for i in range(0, frames.shape[0], batch_size):
+                        end_idx = min(i + batch_size, frames.shape[0])
+                        batch_frames = frames[i:end_idx]
+                        print(f"[INFO] Processing frames {i}-{end_idx} of {frames.shape[0]}")
+                        
+                        # Convert to OpenCV format
+                        for frame in batch_frames:
+                            # Convert from RGB to BGR for OpenCV
+                            frame_np = frame.numpy()
+                            frame_cv = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+                            video_writer.write(frame_cv)
+                            
+                    video_writer.release()
+                    print(f"[INFO] Finished writing video to {temp_video_path}")
+                else:
+                    # For smaller videos, use torchvision directly
+                    print(f"[INFO] Writing video with {frames.shape[0]} frames using torchvision")
+                    io.write_video(temp_video_path, frames, fps=25, video_codec='h264')
+                    print(f"[INFO] Finished writing video to {temp_video_path}")
+            except Exception as e:
+                print(f"[ERROR] Error writing video with torchvision: {str(e)}")
+                # Fallback to pyav if torchvision fails
+                try:
+                    import av
+                    print("[INFO] Falling back to PyAV for video writing")
+                    container = av.open(temp_video_path, mode='w')
+                    stream = container.add_stream('h264', rate=25)
+                    stream.width = frames.shape[2]
+                    stream.height = frames.shape[1]
 
-                for frame in frames_cpu:
-                    frame = av.VideoFrame.from_ndarray(frame.numpy(), format='rgb24')
-                    packet = stream.encode(frame)
+                    for i, frame in enumerate(frames):
+                        if i % 50 == 0:
+                            print(f"[INFO] Writing frame {i}/{frames.shape[0]}")
+                        frame = av.VideoFrame.from_ndarray(frame.numpy(), format='rgb24')
+                        packet = stream.encode(frame)
+                        container.mux(packet)
+
+                    packet = stream.encode(None)
                     container.mux(packet)
+                    container.close()
+                    print(f"[INFO] Finished writing video to {temp_video_path} using PyAV")
+                except Exception as e:
+                    print(f"[ERROR] Error writing video with PyAV: {str(e)}")
+                    raise
 
-                packet = stream.encode(None)
-                container.mux(packet)
-                container.close()
+            # Clear memory after video/audio processing
+            del frames
+            del waveform
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                log_memory("After clearing video/audio memory")
 
             # Define paths to required files and configs
             inference_script_path = os.path.join(cur_dir, "scripts", "inference.py")
@@ -594,8 +747,31 @@ class LatentSyncNode:
                 raise FileNotFoundError(f"Output video not found at: {output_video_path}")
             
             # Read the processed video - ensure it's loaded as CPU tensor
-            processed_frames = io.read_video(output_video_path, pts_unit='sec')[0]
-            processed_frames = processed_frames.float() / 255.0
+            # Read video in chunks to avoid OOM
+            try:
+                processed_frames = io.read_video(output_video_path, pts_unit='sec')[0]
+                processed_frames = processed_frames.float() / 255.0
+            except Exception as e:
+                print(f"Error reading output video with torchvision: {str(e)}")
+                # Fallback to reading with OpenCV if torchvision fails
+                try:
+                    import cv2
+                    cap = cv2.VideoCapture(output_video_path)
+                    frames_list = []
+                    
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        # Convert from BGR to RGB
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frames_list.append(torch.from_numpy(frame_rgb).float() / 255.0)
+                    
+                    cap.release()
+                    processed_frames = torch.stack(frames_list)
+                except Exception as e:
+                    print(f"Error reading output video with OpenCV: {str(e)}")
+                    raise
 
             # Ensure audio is on CPU before returning
             if torch.cuda.is_available():
