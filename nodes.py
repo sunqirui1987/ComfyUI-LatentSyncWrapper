@@ -758,11 +758,30 @@ class LatentSyncNode:
                 raise
             
             # Package audio for return
-            resampled_audio = {
-                "waveform": torch.zeros((1, 1)),  # Placeholder, actual audio is in file
-                "sample_rate": new_sample_rate
-            }
+            try:
+                # Read the actual audio from the file
+                waveform, sample_rate = torchaudio.load(audio_path)
+                # Add batch dimension to waveform [batch_size, channels, samples]
+                waveform = waveform.unsqueeze(0)
+                resampled_audio = {
+                    "waveform": waveform,
+                    "sample_rate": sample_rate
+                }
+            except Exception as e:
+                print(f"[WARNING] Failed to read audio from {audio_path}: {str(e)}")
+                # Fallback to placeholder if reading fails
+                resampled_audio = {
+                    "waveform": torch.zeros((1, 1, 1)),  # Placeholder with correct dimensions
+                    "sample_rate": new_sample_rate
+                }
             print("[INFERENCE] Packaging results for return")
+            
+            # Ensure audio and video are on CPU before returning
+            if torch.cuda.is_available():
+                if hasattr(resampled_audio["waveform"], 'device') and resampled_audio["waveform"].device.type == 'cuda':
+                    resampled_audio["waveform"] = resampled_audio["waveform"].cpu()
+                if hasattr(processed_frames, 'device') and processed_frames.device.type == 'cuda':
+                    processed_frames = processed_frames.cpu()
             
             return (processed_frames, resampled_audio)
             
