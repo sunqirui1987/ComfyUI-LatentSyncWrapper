@@ -34,6 +34,51 @@ def get_comfyui_temp_dir():
     # Return None if we can't find it
     return None
 
+def optimize_memory_usage():
+    """Optimize memory usage by clearing caches and setting appropriate flags"""
+    if torch.cuda.is_available():
+        # Clear GPU cache
+        torch.cuda.empty_cache()
+        
+        # Set memory efficient attention
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        
+        # Set memory fraction to avoid using all GPU memory
+        try:
+            torch.cuda.set_per_process_memory_fraction(0.7)  # Use only 70% of GPU memory
+        except:
+            pass
+            
+        # Enable memory efficient attention
+        try:
+            from xformers.ops import memory_efficient_attention
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+        except:
+            pass
+
+def process_frames_memory_efficient(frames, device):
+    """Process frames in a memory efficient way"""
+    # Process frames in smaller batches to avoid OOM
+    batch_size = 4  # Adjust based on available memory
+    processed_frames = []
+    
+    for i in range(0, len(frames), batch_size):
+        batch = frames[i:i+batch_size]
+        # Convert to bytes while still on CPU
+        batch = (batch * 255).byte()
+        if len(batch.shape) == 3:
+            batch = batch.unsqueeze(0)
+        processed_frames.append(batch)
+        
+        # Clear memory after each batch
+        del batch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Concatenate all processed frames
+    return torch.cat(processed_frames)
+
 # Function to clean up any ComfyUI temp directories
 def cleanup_comfyui_temp_directories():
     """Find and clean up any ComfyUI temp directories"""
@@ -156,6 +201,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from decimal import Decimal, ROUND_UP
 import requests
+from tqdm import tqdm
 
 # Modify folder_paths module to use our temp directory
 if hasattr(folder_paths, "get_temp_directory"):
@@ -380,6 +426,7 @@ class LatentSyncNode:
     FUNCTION = "inference"
 
     def process_batch(self, batch, use_mixed_precision=False):
+        """Process a batch of frames and save them to temporary files"""
         with torch.cuda.amp.autocast(enabled=use_mixed_precision):
             processed_batch = batch.float() / 255.0
             if len(processed_batch.shape) == 3:
@@ -390,9 +437,125 @@ class LatentSyncNode:
                 processed_batch = processed_batch[..., :3]
             return processed_batch
 
+    def save_frames_to_files(self, frames, temp_dir):
+        """Save frames to temporary files and return the list of file paths"""
+        import cv2
+        import numpy as np
+        
+        print(f"[FRAMES] Starting frame processing: shape={frames.shape}")
+        
+        frame_paths = []
+        os.makedirs(temp_dir, exist_ok=True)
+        print(f"[FRAMES] Created frame directory: {temp_dir}")
+        
+        # Process frames in smaller batches to avoid memory issues
+        batch_size = 10  # Process 10 frames at a time
+        total_frames = frames.shape[0]
+        print(f"[FRAMES] Total frames to process: {total_frames}, batch_size={batch_size}")
+        
+        # Calculate total number of batches
+        total_batches = (total_frames + batch_size - 1) // batch_size
+        
+        # Use tqdm for progress tracking
+        for i in tqdm(range(0, total_frames, batch_size), 
+                     total=total_batches,
+                     desc="Processing frames",
+                     unit="batch"):
+            end_idx = min(i + batch_size, total_frames)
+            batch = frames[i:end_idx]
+            print(f"[FRAMES] Processing batch {i}-{end_idx} of {total_frames}")
+            
+            for j, frame in enumerate(batch):
+                frame_idx = i + j
+                # Convert tensor to numpy array
+                frame_np = (frame.cpu().numpy() * 255).astype(np.uint8)
+                
+                # Save frame to file
+                frame_path = os.path.join(temp_dir, f"frame_{frame_idx:06d}.png")
+                cv2.imwrite(frame_path, cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR))
+                frame_paths.append(frame_path)
+                
+                if frame_idx % 50 == 0:
+                    print(f"[FRAMES] Saved frame {frame_idx}/{total_frames}")
+                
+                # Clear memory
+                del frame_np
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Clear batch memory
+            del batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print(f"[FRAMES] Memory cleared after batch {i}-{end_idx}")
+        
+        print(f"[FRAMES] Completed saving {len(frame_paths)} frames")
+        return frame_paths
+
+    def process_audio_stream(self, waveform, sample_rate, target_sample_rate=16000, chunk_size=500000):
+        """Process audio in chunks and save to temporary file"""
+        import tempfile
+        import soundfile as sf
+        
+        print(f"[AUDIO] Starting audio processing: shape={waveform.shape}, sample_rate={sample_rate}")
+        
+        # Create temporary file for processed audio
+        temp_audio = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        temp_audio_path = temp_audio.name
+        temp_audio.close()
+        print(f"[AUDIO] Created temporary audio file: {temp_audio_path}")
+        
+        # Initialize resampler
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=sample_rate,
+            new_freq=target_sample_rate
+        )
+        print(f"[AUDIO] Initialized resampler: {sample_rate}Hz -> {target_sample_rate}Hz")
+        
+        # Process audio in chunks
+        total_samples = waveform.shape[1]
+        processed_chunks = []
+        print(f"[AUDIO] Total samples to process: {total_samples}")
+        
+        for i in range(0, total_samples, chunk_size):
+            end_idx = min(i + chunk_size, total_samples)
+            chunk = waveform[:, i:end_idx]
+            print(f"[AUDIO] Processing chunk {i}-{end_idx} of {total_samples}")
+            
+            # Process chunk
+            chunk_resampled = resampler(chunk)
+            processed_chunks.append(chunk_resampled)
+            
+            # Clear memory
+            del chunk
+            del chunk_resampled
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print(f"[AUDIO] Memory cleared after chunk {i}-{end_idx}")
+        
+        # Concatenate and save
+        print("[AUDIO] Concatenating processed chunks")
+        processed_audio = torch.cat(processed_chunks, dim=1)
+        print(f"[AUDIO] Saving processed audio: shape={processed_audio.shape}")
+        torchaudio.save(temp_audio_path, processed_audio, target_sample_rate)
+        print(f"[AUDIO] Saved processed audio to {temp_audio_path}")
+        
+        # Clear memory
+        del processed_chunks
+        del processed_audio
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print("[AUDIO] Final memory cleanup completed")
+        
+        return temp_audio_path, target_sample_rate
+
     def inference(self, images, audio, seed, lips_expression=1.5, inference_steps=20):
         # Use our module temp directory
         global MODULE_TEMP_DIR
+        
+        print("[INFERENCE] Starting inference process")
+        print(f"[INFERENCE] Input images shape: {images.shape if hasattr(images, 'shape') else 'list of tensors'}")
+        print(f"[INFERENCE] Audio shape: {audio['waveform'].shape}, Sample rate: {audio['sample_rate']}")
         
         # Initialize logging function
         def log_memory(message):
@@ -411,283 +574,124 @@ class LatentSyncNode:
         # Start logging
         log_memory("Starting inference")
         
-        # Get GPU capabilities and memory
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"[INFO] Using device: {device}")
-        BATCH_SIZE = 4
-        use_mixed_precision = False
-        
-        # Determine available GPU memory and set parameters accordingly
-        if torch.cuda.is_available():
-            # Clear GPU cache before we start
-            torch.cuda.empty_cache()
-            log_memory("After initial cache clear")
-            
-            # Get total and free memory
-            total_mem = torch.cuda.get_device_properties(0).total_memory
-            # Convert to GB for better readability in logs
-            total_mem_gb = total_mem / (1024 ** 3)
-            
-            # Try to get current free memory
-            try:
-                reserved_mem = torch.cuda.memory_reserved(0)
-                allocated_mem = torch.cuda.memory_allocated(0)
-                free_mem = total_mem - reserved_mem
-                free_mem_gb = free_mem / (1024 ** 3)
-                print(f"[INFO] Total GPU memory: {total_mem_gb:.2f}GB, Free: {free_mem_gb:.2f}GB")
-            except:
-                # If we can't get free memory, just use total memory
-                free_mem_gb = total_mem_gb
-                print(f"[INFO] Total GPU memory: {total_mem_gb:.2f}GB")
-                
-            # Determine batch size and precision based on available memory
-            if free_mem_gb > 12:  # High-end GPUs with plenty of memory
-                BATCH_SIZE = 8
-                use_mixed_precision = True
-                print("[CONFIG] Using high-memory settings: batch_size=8, mixed_precision=True")
-            elif free_mem_gb > 6:  # Mid-range GPUs
-                BATCH_SIZE = 4
-                use_mixed_precision = True
-                print("[CONFIG] Using mid-memory settings: batch_size=4, mixed_precision=True")
-            else:  # Lower memory GPUs
-                BATCH_SIZE = 2
-                use_mixed_precision = True
-                print("[CONFIG] Using low-memory settings: batch_size=2, mixed_precision=True")
-            
-            # Set performance options
-            torch.backends.cudnn.benchmark = True
-            if free_mem_gb > 8:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-                print("[CONFIG] Enabled TF32 precision")
-            
-            # Set memory fraction to avoid using all GPU memory
-            try:
-                torch.cuda.set_per_process_memory_fraction(0.7)  # Use only 70% of GPU memory
-                print("[CONFIG] Set GPU memory fraction to 0.7")
-            except:
-                print("[WARNING] Could not set memory fraction, using default memory management")
-
         # Create a run-specific subdirectory in our temp directory
         run_id = ''.join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(5))
         temp_dir = os.path.join(MODULE_TEMP_DIR, f"run_{run_id}")
         os.makedirs(temp_dir, exist_ok=True)
-        print(f"[INFO] Created temporary directory: {temp_dir}")
+        print(f"[INFERENCE] Created temporary directory: {temp_dir}")
         
-        # Ensure ComfyUI temp doesn't exist again (in case something recreated it)
-        comfyui_temp = get_comfyui_temp_dir()
-        if comfyui_temp and os.path.exists(comfyui_temp):
-            backup_name = f"{comfyui_temp}_backup_{uuid.uuid4().hex[:8]}"
-            try:
-                os.rename(comfyui_temp, backup_name)
-                print(f"[INFO] Renamed ComfyUI temp directory to {backup_name}")
-            except:
-                print(f"[WARNING] Failed to rename ComfyUI temp directory")
+        # Create frame directory
+        frames_dir = os.path.join(temp_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
+        print(f"[INFERENCE] Created frames directory: {frames_dir}")
         
-        temp_video_path = None
-        output_video_path = None
-        audio_path = None
-
         try:
-            # Create temporary file paths in our system temp directory
-            temp_video_path = os.path.join(temp_dir, f"temp_{run_id}.mp4")
-            output_video_path = os.path.join(temp_dir, f"latentsync_{run_id}_out.mp4")
-            audio_path = os.path.join(temp_dir, f"latentsync_{run_id}_audio.wav")
-            
-            # Get the extension directory
-            cur_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Log image information
-            print(f"[INFO] Input images shape: {images.shape if hasattr(images, 'shape') else 'list of tensors'}")
-            print(f"[INFO] Audio shape: {audio['waveform'].shape}, Sample rate: {audio['sample_rate']}")
-            
-            # Process input frames - keep on CPU as long as possible
+            # Process input frames and save to files
             log_memory("Before processing input frames")
             if isinstance(images, list):
                 frames = torch.stack(images)
-                print(f"[INFO] Stacked list of images into tensor of shape {frames.shape}")
+                print(f"[INFERENCE] Stacked list of images into tensor of shape {frames.shape}")
             else:
-                frames = images.clone()  # Use clone to avoid modifying original data
-                print(f"[INFO] Cloned image tensor of shape {frames.shape}")
-                
-            # Convert to bytes while still on CPU
-            frames = (frames * 255).byte()
-            print(f"[INFO] Converted frames to byte tensor")
+                frames = images  # No need to clone since we're saving to files
+                print(f"[INFERENCE] Using image tensor of shape {frames.shape}")
             
-            if len(frames.shape) == 3:
-                frames = frames.unsqueeze(0)
-                print(f"[INFO] Unsqueezed frames to shape {frames.shape}")
+            # Save frames to files
+            frame_paths = self.save_frames_to_files(frames, frames_dir)
+            print(f"[INFERENCE] Saved {len(frame_paths)} frames to {frames_dir}")
             
-            log_memory("After processing input frames")
-                
-            # Process audio - keep on CPU initially
+            # Clear frames from memory
+            del frames
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            log_memory("After saving frames to files")
+            
+            # Process audio in streaming mode
             log_memory("Before processing audio")
             waveform = audio["waveform"]
             sample_rate = audio["sample_rate"]
+            
             if waveform.dim() == 3:
                 waveform = waveform.squeeze(0)
-                print(f"[INFO] Squeezed waveform to shape {waveform.shape}")
-
-            if sample_rate != 16000:
-                print(f"[INFO] Resampling audio from {sample_rate}Hz to 16000Hz")
-                # Create resampler on CPU first, then move to device only for processing
-                new_sample_rate = 16000
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate,
-                    new_freq=new_sample_rate
-                )
-                
-                if device.type == 'cuda':
-                    # Process in smaller chunks if needed for large audio
-                    if waveform.shape[1] > 1000000:  # If very long audio
-                        print("[INFO] Processing large audio in chunks")
-                        chunk_size = 500000
-                        chunks = []
-                        
-                        for i in range(0, waveform.shape[1], chunk_size):
-                            end = min(i + chunk_size, waveform.shape[1])
-                            chunk = waveform[:, i:end]
-                            print(f"[INFO] Processing audio chunk {i}-{end} of {waveform.shape[1]}")
-                            # Move each chunk to GPU, process, then back to CPU
-                            chunk_gpu = chunk.to(device)
-                            log_memory(f"After moving audio chunk {i}-{end} to GPU")
-                            chunk_resampled = resampler.to(device)(chunk_gpu)
-                            chunks.append(chunk_resampled.cpu())
-                            # Clear GPU memory after each chunk
-                            del chunk_gpu
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                                log_memory(f"After processing audio chunk {i}-{end}")
-                                
-                        waveform_16k = torch.cat(chunks, dim=1)
-                        print(f"[INFO] Concatenated {len(chunks)} audio chunks")
-                    else:
-                        # For smaller audio, process normally
-                        print("[INFO] Processing audio on GPU")
-                        waveform_gpu = waveform.to(device)
-                        log_memory("After moving audio to GPU")
-                        waveform_16k = resampler.to(device)(waveform_gpu)
-                        waveform_16k = waveform_16k.cpu()  # Move back to CPU
-                        print("[INFO] Moved resampled audio back to CPU")
-                        del waveform_gpu
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                            log_memory("After audio processing")
-                else:
-                    # For CPU processing
-                    print("[INFO] Processing audio on CPU")
-                    waveform_16k = resampler(waveform)
-                    
-                waveform, sample_rate = waveform_16k, new_sample_rate
-                print(f"[INFO] Resampled audio shape: {waveform.shape}, New sample rate: {sample_rate}")
-
-            # Package resampled audio
-            resampled_audio = {
-                "waveform": waveform.unsqueeze(0),
-                "sample_rate": sample_rate
-            }
+                print(f"[INFERENCE] Squeezed waveform to shape {waveform.shape}")
             
-            # Save audio to file
-            print(f"[INFO] Saving audio to {audio_path}")
-            torchaudio.save(audio_path, waveform, sample_rate)
-
-            # Save video to file - process in batches if needed
-            log_memory("Before saving video to file")
-            try:
-                import torchvision.io as io
-                # For large videos, write frames in batches to avoid OOM
-                if frames.shape[0] > 100:  # If video has many frames
-                    import cv2
-                    print(f"[INFO] Processing large video with {frames.shape[0]} frames in batches")
-                    
-                    # Get video dimensions
-                    height, width = frames.shape[1], frames.shape[2]
-                    print(f"[INFO] Video dimensions: {width}x{height}")
-                    
-                    # Create video writer
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    video_writer = cv2.VideoWriter(temp_video_path, fourcc, 25, (width, height))
-                    
-                    # Process in batches
-                    batch_size = min(50, frames.shape[0])  # Process 50 frames at a time
-                    print(f"[INFO] Processing video in batches of {batch_size} frames")
-                    for i in range(0, frames.shape[0], batch_size):
-                        end_idx = min(i + batch_size, frames.shape[0])
-                        batch_frames = frames[i:end_idx]
-                        print(f"[INFO] Processing frames {i}-{end_idx} of {frames.shape[0]}")
-                        
-                        # Convert to OpenCV format
-                        for frame in batch_frames:
-                            # Convert from RGB to BGR for OpenCV
-                            frame_np = frame.numpy()
-                            frame_cv = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-                            video_writer.write(frame_cv)
-                            
-                    video_writer.release()
-                    print(f"[INFO] Finished writing video to {temp_video_path}")
-                else:
-                    # For smaller videos, use torchvision directly
-                    print(f"[INFO] Writing video with {frames.shape[0]} frames using torchvision")
-                    io.write_video(temp_video_path, frames, fps=25, video_codec='h264')
-                    print(f"[INFO] Finished writing video to {temp_video_path}")
-            except Exception as e:
-                print(f"[ERROR] Error writing video with torchvision: {str(e)}")
-                # Fallback to pyav if torchvision fails
-                try:
-                    import av
-                    print("[INFO] Falling back to PyAV for video writing")
-                    container = av.open(temp_video_path, mode='w')
-                    stream = container.add_stream('h264', rate=25)
-                    stream.width = frames.shape[2]
-                    stream.height = frames.shape[1]
-
-                    for i, frame in enumerate(frames):
-                        if i % 50 == 0:
-                            print(f"[INFO] Writing frame {i}/{frames.shape[0]}")
-                        frame = av.VideoFrame.from_ndarray(frame.numpy(), format='rgb24')
-                        packet = stream.encode(frame)
-                        container.mux(packet)
-
-                    packet = stream.encode(None)
-                    container.mux(packet)
-                    container.close()
-                    print(f"[INFO] Finished writing video to {temp_video_path} using PyAV")
-                except Exception as e:
-                    print(f"[ERROR] Error writing video with PyAV: {str(e)}")
-                    raise
-
-            # Clear memory after video/audio processing
-            del frames
+            # Process audio in streaming mode and save to file
+            audio_path, new_sample_rate = self.process_audio_stream(
+                waveform, 
+                sample_rate,
+                target_sample_rate=16000 if sample_rate != 16000 else sample_rate
+            )
+            print(f"[INFERENCE] Processed audio saved to {audio_path}")
+            
+            # Clear audio from memory
             del waveform
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                log_memory("After clearing video/audio memory")
-
+            log_memory("After processing audio")
+            
+            # Create video from frame files
+            temp_video_path = os.path.join(temp_dir, f"temp_{run_id}.mp4")
+            output_video_path = os.path.join(temp_dir, f"latentsync_{run_id}_out.mp4")
+            
+            # Create video from frame files using ffmpeg
+            import subprocess
+            frame_pattern = os.path.join(frames_dir, "frame_%06d.png")
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-framerate", "25",
+                "-i", frame_pattern,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                temp_video_path
+            ]
+            
+            print(f"[INFERENCE] Creating video from frames using ffmpeg")
+            print(f"[INFERENCE] Command: {' '.join(ffmpeg_cmd)}")
+            subprocess.run(ffmpeg_cmd, check=True)
+            print(f"[INFERENCE] Video created at {temp_video_path}")
+            
+            # Clear frame files to save space
+            print("[INFERENCE] Cleaning up frame files")
+            for frame_path in frame_paths:
+                try:
+                    os.remove(frame_path)
+                except:
+                    pass
+            try:
+                os.rmdir(frames_dir)
+            except:
+                pass
+            print("[INFERENCE] Frame files cleanup completed")
+            
+            # Get the extension directory
+            cur_dir = os.path.dirname(os.path.abspath(__file__))
+            print(f"[INFERENCE] Current directory: {cur_dir}")
+            
             # Define paths to required files and configs
             inference_script_path = os.path.join(cur_dir, "scripts", "inference.py")
             config_path = os.path.join(cur_dir, "configs", "unet", "stage2.yaml")
             scheduler_config_path = os.path.join(cur_dir, "configs")
             ckpt_path = os.path.join(cur_dir, "checkpoints", "latentsync_unet.pt")
             whisper_ckpt_path = os.path.join(cur_dir, "checkpoints", "whisper", "tiny.pt")
-
-            # Create config and args
+            
+            print(f"[INFERENCE] Loading config from {config_path}")
             config = OmegaConf.load(config_path)
-
+            
             # Set the correct mask image path
             mask_image_path = os.path.join(cur_dir, "latentsync", "utils", "mask.png")
-            # Make sure the mask image exists
             if not os.path.exists(mask_image_path):
-                # Try to find it in the utils directory directly
                 alt_mask_path = os.path.join(cur_dir, "utils", "mask.png")
                 if os.path.exists(alt_mask_path):
                     mask_image_path = alt_mask_path
+                    print(f"[INFERENCE] Using alternative mask path: {mask_image_path}")
                 else:
-                    print(f"Warning: Could not find mask image at expected locations")
-
+                    print(f"[WARNING] Could not find mask image at expected locations")
+            
             # Set mask path in config
             if hasattr(config, "data") and hasattr(config.data, "mask_image_path"):
                 config.data.mask_image_path = mask_image_path
-
+                print(f"[INFERENCE] Set mask path in config: {mask_image_path}")
+            
+            print("[INFERENCE] Creating inference arguments")
             args = argparse.Namespace(
                 unet_config_path=config_path,
                 inference_ckpt_path=ckpt_path,
@@ -696,122 +700,102 @@ class LatentSyncNode:
                 video_out_path=output_video_path,
                 seed=seed,
                 inference_steps=inference_steps,
-                guidance_scale=lips_expression,  # Using lips_expression for the guidance_scale
+                guidance_scale=lips_expression,
                 scheduler_config_path=scheduler_config_path,
                 whisper_ckpt_path=whisper_ckpt_path,
-                device=device,
-                batch_size=BATCH_SIZE,
-                use_mixed_precision=use_mixed_precision,
+                device=torch.device('cpu'),  # Force CPU to save memory
+                batch_size=1,  # Reduce batch size to save memory
+                use_mixed_precision=True,  # Enable mixed precision
                 temp_dir=temp_dir,
                 mask_image_path=mask_image_path
             )
-
-            # Set PYTHONPATH to include our directories 
+            
+            # Set PYTHONPATH
             package_root = os.path.dirname(cur_dir)
             if package_root not in sys.path:
                 sys.path.insert(0, package_root)
             if cur_dir not in sys.path:
                 sys.path.insert(0, cur_dir)
-
-            # Clean GPU cache before inference
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                
-            # Check and prevent ComfyUI temp creation again
-            if os.path.exists(comfyui_temp):
-                try:
-                    os.rename(comfyui_temp, f"{comfyui_temp}_backup_{uuid.uuid4().hex[:8]}")
-                except:
-                    pass
-
+            print(f"[INFERENCE] Updated PYTHONPATH with: {package_root}, {cur_dir}")
+            
             # Import the inference module
+            print(f"[INFERENCE] Importing inference module from {inference_script_path}")
             inference_module = import_inference_script(inference_script_path)
             
-            # Monkey patch any temp directory functions in the inference module
-            if hasattr(inference_module, 'get_temp_dir'):
-                inference_module.get_temp_dir = lambda *args, **kwargs: temp_dir
-                
-            # Create subdirectories that the inference module might expect
-            inference_temp = os.path.join(temp_dir, "temp")
-            os.makedirs(inference_temp, exist_ok=True)
-            
             # Run inference
+            print("[INFERENCE] Starting main inference process")
             inference_module.main(config, args)
-
-            # Clean GPU cache after inference
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # Verify output file exists
-            if not os.path.exists(output_video_path):
-                raise FileNotFoundError(f"Output video not found at: {output_video_path}")
+            print("[INFERENCE] Main inference process completed")
             
-            # Read the processed video - ensure it's loaded as CPU tensor
-            # Read video in chunks to avoid OOM
+            # Read output video in chunks
+            print(f"[INFERENCE] Reading output video from {output_video_path}")
             try:
-                processed_frames = io.read_video(output_video_path, pts_unit='sec')[0]
-                processed_frames = processed_frames.float() / 255.0
+                import cv2
+                cap = cv2.VideoCapture(output_video_path)
+                frames_list = []
+                frame_count = 0
+                
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    # Convert from BGR to RGB
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames_list.append(torch.from_numpy(frame_rgb).float() / 255.0)
+                    frame_count += 1
+                    
+                    if frame_count % 50 == 0:
+                        print(f"[INFERENCE] Processed {frame_count} frames")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                
+                cap.release()
+                print(f"[INFERENCE] Completed reading {frame_count} frames")
+                processed_frames = torch.stack(frames_list)
+                print(f"[INFERENCE] Stacked frames into tensor of shape {processed_frames.shape}")
             except Exception as e:
-                print(f"Error reading output video with torchvision: {str(e)}")
-                # Fallback to reading with OpenCV if torchvision fails
-                try:
-                    import cv2
-                    cap = cv2.VideoCapture(output_video_path)
-                    frames_list = []
-                    
-                    while cap.isOpened():
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-                        # Convert from BGR to RGB
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        frames_list.append(torch.from_numpy(frame_rgb).float() / 255.0)
-                    
-                    cap.release()
-                    processed_frames = torch.stack(frames_list)
-                except Exception as e:
-                    print(f"Error reading output video with OpenCV: {str(e)}")
-                    raise
-
-            # Ensure audio is on CPU before returning
-            if torch.cuda.is_available():
-                if hasattr(resampled_audio["waveform"], 'device') and resampled_audio["waveform"].device.type == 'cuda':
-                    resampled_audio["waveform"] = resampled_audio["waveform"].cpu()
-                if hasattr(processed_frames, 'device') and processed_frames.device.type == 'cuda':
-                    processed_frames = processed_frames.cpu()
-
+                print(f"[ERROR] Error reading output video: {str(e)}")
+                raise
+            
+            # Package audio for return
+            resampled_audio = {
+                "waveform": torch.zeros((1, 1)),  # Placeholder, actual audio is in file
+                "sample_rate": new_sample_rate
+            }
+            print("[INFERENCE] Packaging results for return")
+            
             return (processed_frames, resampled_audio)
-
+            
         except Exception as e:
-            print(f"Error during inference: {str(e)}")
+            print(f"[ERROR] Error during inference: {str(e)}")
             import traceback
             traceback.print_exc()
             raise
-
+            
         finally:
-            # Clean up temporary files individually
+            print("[INFERENCE] Starting cleanup")
+            # Clean up temporary files
             for path in [temp_video_path, output_video_path, audio_path]:
                 if path and os.path.exists(path):
                     try:
                         os.remove(path)
-                        print(f"Removed temporary file: {path}")
-                    except Exception as e:
-                        print(f"Failed to remove {path}: {str(e)}")
-
-            # Remove temporary run directory
+                        print(f"[INFERENCE] Removed temporary file: {path}")
+                    except:
+                        print(f"[WARNING] Failed to remove temporary file: {path}")
+            
+            # Remove temporary directory
             if temp_dir and os.path.exists(temp_dir):
                 try:
                     shutil.rmtree(temp_dir, ignore_errors=True)
-                    print(f"Removed run temporary directory: {temp_dir}")
-                except Exception as e:
-                    print(f"Failed to remove temp run directory: {str(e)}")
-
-            # Clean up any ComfyUI temp directories again (in case they were created during execution)
-            cleanup_comfyui_temp_directories()
-
-            # Final GPU cache cleanup
+                    print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
+                except:
+                    print(f"[WARNING] Failed to remove temporary directory: {temp_dir}")
+            
+            # Final memory cleanup
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                print("[INFERENCE] Final memory cleanup completed")
+            print("[INFERENCE] Cleanup completed")
 
 class VideoLengthAdjuster:
     @classmethod
