@@ -202,6 +202,7 @@ from PIL import Image
 from decimal import Decimal, ROUND_UP
 import requests
 from tqdm import tqdm
+import time
 
 # Modify folder_paths module to use our temp directory
 if hasattr(folder_paths, "get_temp_directory"):
@@ -421,8 +422,8 @@ class LatentSyncNode:
 
     CATEGORY = "LatentSyncNode"
 
-    RETURN_TYPES = ("IMAGE", "AUDIO")
-    RETURN_NAMES = ("images", "audio") 
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("video_path",)
     FUNCTION = "inference"
 
     def process_batch(self, batch, use_mixed_precision=False):
@@ -736,69 +737,8 @@ class LatentSyncNode:
                 torch.cuda.empty_cache()
             print("[INFERENCE] Cleaned up unused variables and memory")
 
-            # Read output video in chunks
-            print(f"[INFERENCE] Reading output video from {output_video_path}")
-            try:
-                import cv2
-                cap = cv2.VideoCapture(output_video_path)
-                frames_list = []
-                frame_count = 0
-                
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    # Convert from BGR to RGB
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frames_list.append(torch.from_numpy(frame_rgb).float() / 255.0)
-                    frame_count += 1
-                    
-                    if frame_count % 50 == 0:
-                        print(f"[INFERENCE] Processed {frame_count} frames")
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                
-                cap.release()
-                print(f"[INFERENCE] Completed reading {frame_count} frames")
-                
-                # Clear memory before stacking
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    print("[INFERENCE] Memory cleared before stacking frames")
-                
-                processed_frames = torch.stack(frames_list)
-                print(f"[INFERENCE] Stacked frames into tensor of shape {processed_frames.shape}")
-            except Exception as e:
-                print(f"[ERROR] Error reading output video: {str(e)}")
-                raise
-            
-            # Package audio for return
-            try:
-                # Read the actual audio from the file
-                waveform, sample_rate = torchaudio.load(audio_path)
-                # Add batch dimension to waveform [batch_size, channels, samples]
-                waveform = waveform.unsqueeze(0)
-                resampled_audio = {
-                    "waveform": waveform,
-                    "sample_rate": sample_rate
-                }
-            except Exception as e:
-                print(f"[WARNING] Failed to read audio from {audio_path}: {str(e)}")
-                # Fallback to placeholder if reading fails
-                resampled_audio = {
-                    "waveform": torch.zeros((1, 1, 1)),  # Placeholder with correct dimensions
-                    "sample_rate": new_sample_rate
-                }
-            print("[INFERENCE] Packaging results for return")
-            
-            # Ensure audio and video are on CPU before returning
-            if torch.cuda.is_available():
-                if hasattr(resampled_audio["waveform"], 'device') and resampled_audio["waveform"].device.type == 'cuda':
-                    resampled_audio["waveform"] = resampled_audio["waveform"].cpu()
-                if hasattr(processed_frames, 'device') and processed_frames.device.type == 'cuda':
-                    processed_frames = processed_frames.cpu()
-            
-            return (processed_frames, resampled_audio)
+            # Return the video path
+            return (output_video_path,)
             
         except Exception as e:
             print(f"[ERROR] Error during inference: {str(e)}")
@@ -929,16 +869,71 @@ class VideoLengthAdjuster:
                 {"waveform": padded_audio.unsqueeze(0), "sample_rate": sample_rate}
             )
 
+class LatentVideoOutput:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "video_path": ("STRING",),
+                "frame_rate": ("FLOAT", {"default": 25.0, "min": 1.0, "max": 120.0}),
+                "filename_prefix": ("STRING", {"default": "LatentSync"}),
+                "format": (["video/mp4"],),
+                "save_output": ("BOOLEAN", {"default": True}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+                "unique_id": "UNIQUE_ID"
+            },
+        }
 
+    RETURN_TYPES = ("VHS_FILENAMES",)
+    RETURN_NAMES = ("Filenames",)
+    OUTPUT_NODE = True
+    CATEGORY = "LatentSyncNode"
+    FUNCTION = "save_video"
+
+    def save_video(self, video_path, frame_rate, filename_prefix, format, save_output, prompt=None, extra_pnginfo=None, unique_id=None):
+        # Get the filename from the path
+        filename = os.path.basename(video_path)
+        
+        # Create the output directory if it doesn't exist
+        output_dir = folder_paths.get_output_directory()
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Copy the video to the output directory if save_output is True
+        if save_output:
+            output_path = os.path.join(output_dir, filename)
+            if video_path != output_path:
+                shutil.copy2(video_path, output_path)
+        
+        # Create preview object
+        preview = {
+            "filename": filename,
+            "subfolder": "",
+            "type": "output" if save_output else "temp",
+            "format": format,
+            "frame_rate": frame_rate,
+            "fullpath": output_path if save_output else video_path
+        }
+        
+        return {
+            "ui": {
+                "gifs": [preview]
+            },
+            "result": ((save_output, [output_path if save_output else video_path]),)
+        }
 
 # Node Mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
     "LatentSyncNode": LatentSyncNode,
     "VideoLengthAdjuster": VideoLengthAdjuster,
+    "LatentVideoOutput": LatentVideoOutput,
 }
 
 # Display Names for ComfyUI
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentSyncNode": "LatentSync1.5 Node",
     "VideoLengthAdjuster": "Video Length Adjuster",
- }
+    "LatentVideoOutput": "LatentVideoOutput",
+}
