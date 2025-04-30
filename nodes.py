@@ -765,13 +765,6 @@ class LatentSyncNode:
             # Remove temporary directory, but keep the output video
             if temp_dir and os.path.exists(temp_dir):
                 try:
-                    # Move the output video to a safe location before removing the directory
-                    if os.path.exists(output_video_path):
-                        safe_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
-                        shutil.move(output_video_path, safe_path)
-                        output_video_path = safe_path
-                        print(f"[INFERENCE] Moved output video to safe location: {safe_path}")
-                    
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
                 except:
@@ -906,9 +899,27 @@ class LatentVideoOutput:
     FUNCTION = "save_video"
 
     def save_video(self, video_path, frame_rate, filename_prefix, format, save_output, prompt=None, extra_pnginfo=None, unique_id=None):
+        print(f"[LatentVideoOutput] Starting save_video with video_path: {video_path}")
+        print(f"[LatentVideoOutput] Parameters: frame_rate={frame_rate}, filename_prefix={filename_prefix}, format={format}, save_output={save_output}")
+        print(f"[LatentVideoOutput] Unique ID: {unique_id}")
+        
         # Validate video_path
-        if not video_path or not os.path.exists(video_path):
-            print(f"[ERROR] Invalid video path: {video_path}")
+        if not video_path:
+            print("[LatentVideoOutput] ERROR: video_path is empty")
+            return {
+                "ui": {"gifs": []},
+                "result": ((False, []),)
+            }
+            
+        if not os.path.exists(video_path):
+            print(f"[LatentVideoOutput] ERROR: video_path does not exist: {video_path}")
+            return {
+                "ui": {"gifs": []},
+                "result": ((False, []),)
+            }
+            
+        if os.path.isdir(video_path):
+            print(f"[LatentVideoOutput] ERROR: video_path is a directory: {video_path}")
             return {
                 "ui": {"gifs": []},
                 "result": ((False, []),)
@@ -918,36 +929,29 @@ class LatentVideoOutput:
         filename = os.path.basename(video_path)
         if not filename:
             filename = f"{filename_prefix}_{unique_id}.mp4"
+            print(f"[LatentVideoOutput] Generated filename: {filename}")
         
         # Create the output directory if it doesn't exist
         output_dir = folder_paths.get_output_directory()
+        print(f"[LatentVideoOutput] Output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
         
         # Always use a path in the output directory
         output_path = os.path.join(output_dir, filename)
+        print(f"[LatentVideoOutput] Output path: {output_path}")
         
-        # Copy the video to the output directory if save_output is True
-        if save_output:
-            if video_path != output_path:
-                try:
-                    shutil.copy2(video_path, output_path)
-                except Exception as e:
-                    print(f"[ERROR] Failed to copy video: {str(e)}")
-                    return {
-                        "ui": {"gifs": []},
-                        "result": ((False, []),)
-                    }
-        else:
-            # When save_output is False, we still need to ensure the file exists in the output directory
-            if video_path != output_path:
-                try:
-                    shutil.copy2(video_path, output_path)
-                except Exception as e:
-                    print(f"[ERROR] Failed to copy video: {str(e)}")
-                    return {
-                        "ui": {"gifs": []},
-                        "result": ((False, []),)
-                    }
+        # Copy the video to the output directory
+        if video_path != output_path:
+            print(f"[LatentVideoOutput] Copying video from {video_path} to {output_path}")
+            try:
+                shutil.copy2(video_path, output_path)
+                print("[LatentVideoOutput] Video copied successfully")
+            except Exception as e:
+                print(f"[LatentVideoOutput] ERROR: Failed to copy video: {str(e)}")
+                return {
+                    "ui": {"gifs": []},
+                    "result": ((False, []),)
+                }
         
         # Create preview object
         preview = {
@@ -958,6 +962,9 @@ class LatentVideoOutput:
             "frame_rate": frame_rate,
             "fullpath": output_path
         }
+        
+        print(f"[LatentVideoOutput] Created preview object: {preview}")
+        print(f"[LatentVideoOutput] Returning result with output_path: {output_path}")
         
         return {
             "ui": {

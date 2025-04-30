@@ -1,218 +1,9 @@
 {
-  "last_node_id": 55,
-  "last_link_id": 73,
+  "id": "5e75b375-1734-4402-9464-f75e06496765",
+  "revision": 0,
+  "last_node_id": 62,
+  "last_link_id": 74,
   "nodes": [
-    {
-      "id": 40,
-      "type": "VHS_LoadVideo",
-      "pos": [
-        -210.04373168945312,
-        730.9093627929688
-      ],
-      "size": [
-        345.1598815917969,
-        519.60400390625
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "shape": 7,
-          "link": null
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "shape": 7,
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            68
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "frame_count",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "links": null
-        },
-        {
-          "name": "video_info",
-          "type": "VHS_VIDEOINFO",
-          "links": [],
-          "slot_index": 3
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VHS_LoadVideo"
-      },
-      "widgets_values": {
-        "video": "upscale_00002.mp4",
-        "force_rate": 25,
-        "custom_width": 0,
-        "custom_height": 768,
-        "frame_load_cap": 0,
-        "skip_first_frames": 0,
-        "select_every_nth": 1,
-        "format": "AnimateDiff",
-        "choose video to upload": "image",
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "force_rate": 25,
-            "frame_load_cap": 0,
-            "skip_first_frames": 0,
-            "select_every_nth": 1,
-            "filename": "upscale_00002.mp4",
-            "type": "input",
-            "format": "video/mp4"
-          },
-          "muted": false
-        }
-      }
-    },
-    {
-      "id": 54,
-      "type": "LatentSyncNode",
-      "pos": [
-        530.228515625,
-        736.6224975585938
-      ],
-      "size": [
-        315,
-        102
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 70
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "link": 71
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            72
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "links": [
-            73
-          ],
-          "slot_index": 1
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LatentSyncNode"
-      },
-      "widgets_values": [
-        1331,
-        "randomize"
-      ]
-    },
-    {
-      "id": 41,
-      "type": "VHS_VideoCombine",
-      "pos": [
-        877.7638549804688,
-        737.4916381835938
-      ],
-      "size": [
-        373.38238525390625,
-        560.0294189453125
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 72
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "shape": 7,
-          "link": 73
-        },
-        {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "shape": 7,
-          "link": null
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "shape": 7,
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "Filenames",
-          "type": "VHS_FILENAMES",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VHS_VideoCombine"
-      },
-      "widgets_values": {
-        "frame_rate": 25,
-        "loop_count": 0,
-        "filename_prefix": "latentsync",
-        "format": "video/h264-mp4",
-        "pix_fmt": "yuv420p",
-        "crf": 19,
-        "save_metadata": true,
-        "trim_to_audio": false,
-        "pingpong": false,
-        "save_output": true,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "latentsync_00036-audio.mp4",
-            "subfolder": "",
-            "type": "output",
-            "format": "video/h264-mp4",
-            "frame_rate": 25,
-            "workflow": "latentsync_00036.png",
-            "fullpath": "D:\\ComfyUI_windows\\ComfyUI\\output\\latentsync_00036-audio.mp4"
-          },
-          "muted": false
-        }
-      }
-    },
     {
       "id": 37,
       "type": "LoadAudio",
@@ -230,21 +21,166 @@
       "inputs": [],
       "outputs": [
         {
+          "label": "音频",
           "name": "AUDIO",
           "type": "AUDIO",
+          "slot_index": 0,
           "links": [
             69
-          ],
-          "slot_index": 0
+          ]
         }
       ],
       "properties": {
         "Node name for S&R": "LoadAudio"
       },
       "widgets_values": [
-        "talk.wav",
-        "",
+        "aa.mp3",
+        null,
         ""
+      ]
+    },
+    {
+      "id": 40,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -210.04373168945312,
+        730.9093627929688
+      ],
+      "size": [
+        345.1598815917969,
+        262
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            68
+          ]
+        },
+        {
+          "label": "帧计数",
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "label": "视频信息",
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "slot_index": 3,
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "1.mp4",
+        "force_rate": 25,
+        "force_size": "Disabled",
+        "custom_width": 0,
+        "custom_height": 768,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "force_rate": 25,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1,
+            "filename": "1.mp4",
+            "type": "input",
+            "format": "video/mp4"
+          },
+          "muted": false
+        }
+      }
+    },
+    {
+      "id": 54,
+      "type": "LatentSyncNode",
+      "pos": [
+        570,
+        740
+      ],
+      "size": [
+        315,
+        150
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 70
+        },
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 71
+        }
+      ],
+      "outputs": [
+        {
+          "label": "video_path",
+          "name": "video_path",
+          "type": "STRING",
+          "slot_index": 0,
+          "links": [
+            74
+          ]
+        },
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "slot_index": 1,
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LatentSyncNode"
+      },
+      "widgets_values": [
+        1405,
+        "randomize",
+        1.5,
+        20
       ]
     },
     {
@@ -263,11 +199,13 @@
       "mode": 0,
       "inputs": [
         {
+          "label": "images",
           "name": "images",
           "type": "IMAGE",
           "link": 68
         },
         {
+          "label": "audio",
           "name": "audio",
           "type": "AUDIO",
           "link": 69
@@ -275,20 +213,22 @@
       ],
       "outputs": [
         {
+          "label": "images",
           "name": "images",
           "type": "IMAGE",
+          "slot_index": 0,
           "links": [
             70
-          ],
-          "slot_index": 0
+          ]
         },
         {
+          "label": "audio",
           "name": "audio",
           "type": "AUDIO",
+          "slot_index": 1,
           "links": [
             71
-          ],
-          "slot_index": 1
+          ]
         }
       ],
       "properties": {
@@ -298,6 +238,50 @@
         "pingpong",
         25,
         0.5
+      ]
+    },
+    {
+      "id": 62,
+      "type": "LatentVideoOutput",
+      "pos": [
+        940,
+        700
+      ],
+      "size": [
+        317.4000244140625,
+        154
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "video_path",
+          "name": "video_path",
+          "type": "STRING",
+          "widget": {
+            "name": "video_path"
+          },
+          "link": 74
+        }
+      ],
+      "outputs": [
+        {
+          "label": "Filenames",
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LatentVideoOutput"
+      },
+      "widgets_values": [
+        "",
+        25,
+        "LatentSync",
+        "video/mp4",
+        true
       ]
     }
   ],
@@ -335,32 +319,25 @@
       "AUDIO"
     ],
     [
-      72,
+      74,
       54,
       0,
-      41,
+      62,
       0,
-      "IMAGE"
-    ],
-    [
-      73,
-      54,
-      1,
-      41,
-      1,
-      "AUDIO"
+      "STRING"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.9646149645000006,
+      "scale": 1.1147298614184062,
       "offset": [
-        782.3789236092532,
-        -486.4612676820768
+        -76.26855935955841,
+        -463.2818929633709
       ]
     },
+    "frontendVersion": "1.16.9",
     "workspace_info": {
       "id": "pdbYnk386LvXhcCuOca6c",
       "saveLock": false,
@@ -370,8 +347,9 @@
     "VHS_latentpreview": false,
     "VHS_latentpreviewrate": 0,
     "node_versions": {
-      "ComfyUI-VideoHelperSuite": "4c7858ddd5126f7293dc3c9f6e0fc4c263cde079",
-      "comfy-core": "0.3.26"
+      "ComfyUI-VideoHelperSuite": "c5216a51c0254372f61d94c365595d29040ff1f2",
+      "ComfyUI-LatentSyncWrapper": "2007ef0d3f325505d92365ddf2625b0030e6c7c2",
+      "comfy-core": "0.3.29"
     },
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true
