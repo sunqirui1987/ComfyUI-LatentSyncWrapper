@@ -738,7 +738,12 @@ class LatentSyncNode:
             print("[INFERENCE] Cleaned up unused variables and memory")
 
             # Return the video path
-            return (output_video_path,)
+            # Copy the video to a safe location before returning
+            safe_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
+            if os.path.exists(output_video_path):
+                shutil.copy2(output_video_path, safe_path)
+                print(f"[INFERENCE] Copied output video to safe location: {safe_path}")
+            return (safe_path)
             
         except Exception as e:
             print(f"[ERROR] Error during inference: {str(e)}")
@@ -748,8 +753,8 @@ class LatentSyncNode:
             
         finally:
             print("[INFERENCE] Starting cleanup")
-            # Clean up temporary files
-            for path in [temp_video_path, output_video_path, audio_path]:
+            # Clean up temporary files, but keep the output video
+            for path in [temp_video_path, audio_path]:
                 if path and os.path.exists(path):
                     try:
                         os.remove(path)
@@ -757,9 +762,16 @@ class LatentSyncNode:
                     except:
                         print(f"[WARNING] Failed to remove temporary file: {path}")
             
-            # Remove temporary directory
+            # Remove temporary directory, but keep the output video
             if temp_dir and os.path.exists(temp_dir):
                 try:
+                    # Move the output video to a safe location before removing the directory
+                    if os.path.exists(output_video_path):
+                        safe_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
+                        shutil.move(output_video_path, safe_path)
+                        output_video_path = safe_path
+                        print(f"[INFERENCE] Moved output video to safe location: {safe_path}")
+                    
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
                 except:
