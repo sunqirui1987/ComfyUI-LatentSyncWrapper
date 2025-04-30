@@ -906,18 +906,48 @@ class LatentVideoOutput:
     FUNCTION = "save_video"
 
     def save_video(self, video_path, frame_rate, filename_prefix, format, save_output, prompt=None, extra_pnginfo=None, unique_id=None):
+        # Validate video_path
+        if not video_path or not os.path.exists(video_path):
+            print(f"[ERROR] Invalid video path: {video_path}")
+            return {
+                "ui": {"gifs": []},
+                "result": ((False, []),)
+            }
+            
         # Get the filename from the path
         filename = os.path.basename(video_path)
+        if not filename:
+            filename = f"{filename_prefix}_{unique_id}.mp4"
         
         # Create the output directory if it doesn't exist
         output_dir = folder_paths.get_output_directory()
         os.makedirs(output_dir, exist_ok=True)
         
+        # Always use a path in the output directory
+        output_path = os.path.join(output_dir, filename)
+        
         # Copy the video to the output directory if save_output is True
         if save_output:
-            output_path = os.path.join(output_dir, filename)
             if video_path != output_path:
-                shutil.copy2(video_path, output_path)
+                try:
+                    shutil.copy2(video_path, output_path)
+                except Exception as e:
+                    print(f"[ERROR] Failed to copy video: {str(e)}")
+                    return {
+                        "ui": {"gifs": []},
+                        "result": ((False, []),)
+                    }
+        else:
+            # When save_output is False, we still need to ensure the file exists in the output directory
+            if video_path != output_path:
+                try:
+                    shutil.copy2(video_path, output_path)
+                except Exception as e:
+                    print(f"[ERROR] Failed to copy video: {str(e)}")
+                    return {
+                        "ui": {"gifs": []},
+                        "result": ((False, []),)
+                    }
         
         # Create preview object
         preview = {
@@ -926,14 +956,14 @@ class LatentVideoOutput:
             "type": "output" if save_output else "temp",
             "format": format,
             "frame_rate": frame_rate,
-            "fullpath": output_path if save_output else video_path
+            "fullpath": output_path
         }
         
         return {
             "ui": {
                 "gifs": [preview]
             },
-            "result": ((save_output, [output_path if save_output else video_path]),)
+            "result": ((save_output, [output_path]),)
         }
 
 # Node Mappings for ComfyUI
