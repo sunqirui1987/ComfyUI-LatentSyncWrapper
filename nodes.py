@@ -422,8 +422,10 @@ class LatentSyncNode:
 
     CATEGORY = "LatentSyncNode"
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("video_path", "audio_path")
+
     FUNCTION = "inference"
 
     def process_batch(self, batch, use_mixed_precision=False):
@@ -743,7 +745,7 @@ class LatentSyncNode:
             if os.path.exists(output_video_path):
                 shutil.copy2(output_video_path, safe_path)
                 print(f"[INFERENCE] Copied output video to safe location: {safe_path}")
-            return (safe_path)
+            return (safe_path, audio_path)
             
         except Exception as e:
             print(f"[ERROR] Error during inference: {str(e)}")
@@ -765,10 +767,24 @@ class LatentSyncNode:
             # Remove temporary directory, but keep the output video
             if temp_dir and os.path.exists(temp_dir):
                 try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
+                    # Remove all files in temp_dir except output_video_path
+                    for root, dirs, files in os.walk(temp_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            if file_path != output_video_path:
+                                try:
+                                    os.remove(file_path)
+                                except:
+                                    pass
+                        for dir in dirs:
+                            dir_path = os.path.join(root, dir)
+                            try:
+                                os.rmdir(dir_path)
+                            except:
+                                pass
+                    print(f"[INFERENCE] Cleaned up temporary directory: {temp_dir}")
                 except:
-                    print(f"[WARNING] Failed to remove temporary directory: {temp_dir}")
+                    print(f"[WARNING] Failed to clean up temporary directory: {temp_dir}")
             
             # Final memory cleanup
             if torch.cuda.is_available():
