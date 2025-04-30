@@ -738,7 +738,20 @@ class LatentSyncNode:
 
             # Return the video path
             # Copy the video to a safe location before returning
-        
+
+            # Move output video and audio to safe locations before cleanup
+            if os.path.exists(output_video_path):
+                safe_video_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
+                shutil.move(output_video_path, safe_video_path)
+                output_video_path = safe_video_path
+                print(f"[INFERENCE] Moved output video to safe location: {safe_video_path}")
+            
+            if os.path.exists(audio_path):
+                safe_audio_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(audio_path))
+                shutil.move(audio_path, safe_audio_path)
+                audio_path = safe_audio_path
+                print(f"[INFERENCE] Moved audio to safe location: {safe_audio_path}")
+            
             print(f"[INFERENCE] Copied output video to safe location: {output_video_path} {audio_path}")
             return (output_video_path, audio_path)
             
@@ -762,19 +775,6 @@ class LatentSyncNode:
             # Remove temporary directory, but keep the output video and audio
             if temp_dir and os.path.exists(temp_dir):
                 try:
-                    # Move output video and audio to safe locations before cleanup
-                    if os.path.exists(output_video_path):
-                        safe_video_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
-                        shutil.move(output_video_path, safe_video_path)
-                        output_video_path = safe_video_path
-                        print(f"[INFERENCE] Moved output video to safe location: {safe_video_path}")
-                    
-                    if os.path.exists(audio_path):
-                        safe_audio_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(audio_path))
-                        shutil.move(audio_path, safe_audio_path)
-                        audio_path = safe_audio_path
-                        print(f"[INFERENCE] Moved audio to safe location: {safe_audio_path}")
-                    
                     # Now safely remove the temp directory
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
