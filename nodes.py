@@ -599,8 +599,9 @@ class LatentSyncNode:
             frame_paths = self.save_frames_to_files(frames, frames_dir)
             print(f"[INFERENCE] Saved {len(frame_paths)} frames to {frames_dir}")
             
-            # Clear frames from memory
+            # Clear frames and images from memory
             del frames
+            del images
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             log_memory("After saving frames to files")
@@ -726,7 +727,15 @@ class LatentSyncNode:
             print("[INFERENCE] Starting main inference process")
             inference_module.main(config, args)
             print("[INFERENCE] Main inference process completed")
-            
+
+            # Clean up unused variables to free memory
+            del config
+            del args
+            del inference_module
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("[INFERENCE] Cleaned up unused variables and memory")
+
             # Read output video in chunks
             print(f"[INFERENCE] Reading output video from {output_video_path}")
             try:
@@ -751,6 +760,12 @@ class LatentSyncNode:
                 
                 cap.release()
                 print(f"[INFERENCE] Completed reading {frame_count} frames")
+                
+                # Clear memory before stacking
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("[INFERENCE] Memory cleared before stacking frames")
+                
                 processed_frames = torch.stack(frames_list)
                 print(f"[INFERENCE] Stacked frames into tensor of shape {processed_frames.shape}")
             except Exception as e:
