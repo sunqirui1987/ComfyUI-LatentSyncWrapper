@@ -732,20 +732,15 @@ class LatentSyncNode:
             print("[INFERENCE] Main inference process completed")
 
             # Clean up unused variables to free memory
-            del config
-            del args
-            del inference_module
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             print("[INFERENCE] Cleaned up unused variables and memory")
 
             # Return the video path
             # Copy the video to a safe location before returning
-            safe_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
-            if os.path.exists(output_video_path):
-                shutil.copy2(output_video_path, safe_path)
-                print(f"[INFERENCE] Copied output video to safe location: {safe_path}")
-            return (safe_path, audio_path)
+        
+            print(f"[INFERENCE] Copied output video to safe location: {output_video_path} {audio_path}")
+            return (output_video_path, audio_path)
             
         except Exception as e:
             print(f"[ERROR] Error during inference: {str(e)}")
@@ -755,8 +750,8 @@ class LatentSyncNode:
             
         finally:
             print("[INFERENCE] Starting cleanup")
-            # Clean up temporary files, but keep the output video
-            for path in [temp_video_path, audio_path]:
+            # Clean up temporary files, but keep the output video and audio
+            for path in [temp_video_path]:
                 if path and os.path.exists(path):
                     try:
                         os.remove(path)
@@ -764,27 +759,27 @@ class LatentSyncNode:
                     except:
                         print(f"[WARNING] Failed to remove temporary file: {path}")
             
-            # Remove temporary directory, but keep the output video
+            # Remove temporary directory, but keep the output video and audio
             if temp_dir and os.path.exists(temp_dir):
                 try:
-                    # Remove all files in temp_dir except output_video_path
-                    for root, dirs, files in os.walk(temp_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            if file_path != output_video_path:
-                                try:
-                                    os.remove(file_path)
-                                except:
-                                    pass
-                        for dir in dirs:
-                            dir_path = os.path.join(root, dir)
-                            try:
-                                os.rmdir(dir_path)
-                            except:
-                                pass
-                    print(f"[INFERENCE] Cleaned up temporary directory: {temp_dir}")
-                except:
-                    print(f"[WARNING] Failed to clean up temporary directory: {temp_dir}")
+                    # Move output video and audio to safe locations before cleanup
+                    if os.path.exists(output_video_path):
+                        safe_video_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(output_video_path))
+                        shutil.move(output_video_path, safe_video_path)
+                        output_video_path = safe_video_path
+                        print(f"[INFERENCE] Moved output video to safe location: {safe_video_path}")
+                    
+                    if os.path.exists(audio_path):
+                        safe_audio_path = os.path.join(MODULE_TEMP_DIR, os.path.basename(audio_path))
+                        shutil.move(audio_path, safe_audio_path)
+                        audio_path = safe_audio_path
+                        print(f"[INFERENCE] Moved audio to safe location: {safe_audio_path}")
+                    
+                    # Now safely remove the temp directory
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    print(f"[INFERENCE] Removed temporary directory: {temp_dir}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to clean up temporary directory: {str(e)}")
             
             # Final memory cleanup
             if torch.cuda.is_available():
